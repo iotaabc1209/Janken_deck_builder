@@ -44,7 +44,8 @@ namespace RpsBuild.Core
         public RpsColor? ReservedForcedFirstColor { get; private set; } = null;
 
         public Tuning Tuning => _tuning;
-        public RpsColor? ReservedForcedFirst => ReservedForcedFirstColor;
+        private readonly List<RpsColor> _reservedForcedOrder = new();
+        public IReadOnlyList<RpsColor> ReservedForcedOrder => _reservedForcedOrder;
 
         public bool IsGameOver => MissCount >= _tuning.MaxMiss;
 
@@ -72,6 +73,27 @@ namespace RpsBuild.Core
 
         public RpsColor PreviewEnemyMainColor { get; private set; } = RpsColor.Gu;
         public RpsColor LastEnemyMainColor { get; private set; } = RpsColor.Gu;
+
+        public PlayerArchetype PlayerArchetype { get; private set; } = PlayerArchetype.Balance;
+        public RpsColor PlayerMainColor { get; private set; } = RpsColor.Gu;
+        public RpsColor PlayerSecondColor { get; private set; } = RpsColor.Choki;
+
+        public bool LastHeavyBonusApplied { get; private set; } = false;
+        public int LastHeavyBonusIndex { get; private set; } = -1;
+        public RpsColor LastHeavyBonusPlayerColor { get; private set; } = RpsColor.Gu;
+
+        public int LastTwinTopBonusWinCount { get; private set; } = 0;
+
+        public bool LastBalanceBonusApplied { get; private set; } = false;
+        public int LastBalanceBonusIndex { get; private set; } = -1;
+        public RpsColor LastBalanceBonusFrom { get; private set; } = RpsColor.Gu;
+        public RpsColor LastBalanceBonusTo { get; private set; } = RpsColor.Gu;
+        public RpsOutcome LastBalanceBonusResult { get; private set; } = RpsOutcome.Tie;
+        public bool LastBalanceBonusCreatedMissing { get; private set; } = false;
+
+        private readonly List<int> _lastTwinTopBonusIndices = new();
+        public IReadOnlyList<int> LastTwinTopBonusIndices => _lastTwinTopBonusIndices;
+
 
 
         // ---- Archetype Stats (Core) ----
@@ -117,6 +139,8 @@ namespace RpsBuild.Core
             if (initialPlayer.Total != 30) throw new ArgumentException("Player deck must total 30.");
             PlayerProfile = initialPlayer;
 
+            RecalcPlayerArchetype();
+
             var envWeights = _tuning.EnvWeights;
 
             if (_tuning.ShuffleEnvWeightsAcrossArchetypes)
@@ -133,17 +157,6 @@ namespace RpsBuild.Core
 
         }
 
-        /// <summary>
-        /// UIから呼ぶ：確定ドロー権を「予約」する。
-        /// 予約は次のラウンド1手目にだけ使われ、実行時にゲージが0になる。
-        /// </summary>
-        public bool TryReserveForcedFirst(RpsColor color)
-        {
-            if (!Gauge.IsCharged(color)) return false;
-            if (!PlayerProfile.Has(color)) return false; // デッキに入ってない色は確定できない
-            ReservedForcedFirstColor = color;
-            return true;
-        }
 
         /// <summary>
         /// ラウンドを1回進める（7枚自動ドロー→判定→ミス更新→欠損勝利→ゲージ加算）。
@@ -151,6 +164,8 @@ namespace RpsBuild.Core
         public RoundResult PlayNextRound()
         {
             if (IsGameOver) throw new InvalidOperationException("Game is over.");
+
+            RoundResult result = null;
 
             // ★次ラウンド用プレビューを「消費」して今回の敵にする
             var archetype = PreviewEnemyArchetype;
@@ -162,26 +177,50 @@ namespace RpsBuild.Core
 
             var playerDeck = new Deck(PlayerProfile);
             var enemyDeck = new Deck(enemyProfile);
-;
 
             // 予約された確定ドロー色（あれば）を適用
-            RpsColor? forced = ReservedForcedFirstColor;
+            List<RpsColor> forced = null;
 
-            // 実際の消費は「ラウンド開始で使用した」とみなし、ここで確定させる
-            if (forced.HasValue)
+            // ★このラウンドで Balance も「予約がある時だけ」発動したい場合のトリガー色
+            // （＝予約が1つでも成功消費できた色）
+            RpsColor? balanceTriggerColor = null;
+
+            if (_reservedForcedOrder.Count > 0)
             {
-                // ゲージを消費して0に戻す
-                // (予約だけして未使用のままにするケースは基本ない想定。必要ならキャンセルUIも作れる)
-                Gauge.TryConsumeCharged(forced.Value);
-                ReservedForcedFirstColor = null;
+                // ★この時点で予約リストはローカルに退避して空にする
+                // （ログが残って次ラウンドに効く問題を根絶）
+                var reserved = new List<RpsColor>(_reservedForcedOrder);
+                _reservedForcedOrder.Clear();
+
+                forced = new List<RpsColor>(reserved.Count);
+
+                // 順番通りに「1回分ずつ」消費（使えた分だけforcedに入れる）
+                for (int i = 0; i < reserved.Count; i++)
+                {
+                    var c = reserved[i];
+                    if (Gauge.TryConsumeCharged(c))
+                    {
+                        forced.Add(c);
+
+                        if (!balanceTriggerColor.HasValue)
+                            balanceTriggerColor = c;
+                    }
+                }
+
+                Debug.Log($"[Forced] gauge Gu={Gauge.Get(RpsColor.Gu):0.###} Ch={Gauge.Get(RpsColor.Choki):0.###} Pa={Gauge.Get(RpsColor.Pa):0.###}  Max={Gauge.Max:0.###}");
+                Debug.Log($"[Forced] count={(forced != null ? forced.Count : 0)}  list={(forced != null ? string.Join(",", forced) : "-")}");
             }
 
             // ---- Intro handling (Round 0): force CLEAR by rerolling (bounded) ----
             bool isIntro = (RoundIndex == 0);
             LastRoundWasIntro = isIntro;
             LastRoundIntroForcedClear = false;
-
-            RoundResult result;
+            LastHeavyBonusApplied = false;
+            LastHeavyBonusIndex = -1;
+            LastTwinTopBonusWinCount = 0;
+            LastBalanceBonusApplied = false;
+            LastBalanceBonusIndex = -1;
+            LastBalanceBonusCreatedMissing = false;
 
             if (!isIntro)
             {
@@ -191,8 +230,82 @@ namespace RpsBuild.Core
                     _tuning.HandCount,
                     _tuning.LoseThresholdExclusive,
                     _rng,
-                    forcedFirstColorForPlayer: forced
+                    forcedForPlayer: forced
                 );
+
+                // ---- Balance（予約がある時だけ） ----
+                // ★自動発動を完全に止める（勝手にゲージ消費しない）
+                if (PlayerArchetype == PlayerArchetype.Balance && balanceTriggerColor.HasValue)
+                {
+                    var gaugeColor = balanceTriggerColor.Value;
+
+                    var before = result;
+                    result = RoundSimulator.ApplyBalance_ChargedGaugeReplaceOneHand(
+                        result,
+                        _tuning.LoseThresholdExclusive,
+                        PlayerProfile,
+                        gaugeColor,
+                        out var applied,
+                        out var idx,
+                        out var from,
+                        out var to,
+                        out var at,
+                        out var createdMissing
+                    );
+
+                    // ★ここではゲージを追加消費しない！
+                    //（確定ドロー側で既に1回分消費しているため）
+                    if (applied && !ReferenceEquals(result, before))
+                    {
+                        LastBalanceBonusApplied = true;
+                        LastBalanceBonusIndex = idx;
+                        LastBalanceBonusFrom = from;
+                        LastBalanceBonusTo = to;
+                        LastBalanceBonusResult = at;
+                        LastBalanceBonusCreatedMissing = createdMissing;
+                    }
+                }
+
+                // Heavy
+                if (PlayerArchetype == PlayerArchetype.Heavy)
+                {
+                    result = RoundSimulator.ApplyHeavy_FirstLoseToWin(
+                        result,
+                        _tuning.LoseThresholdExclusive,
+                        PlayerMainColor,
+                        out var applied,
+                        out var idx,
+                        out var col
+                    );
+
+                    if (applied)
+                    {
+                        LastHeavyBonusApplied = true;
+                        LastHeavyBonusIndex = idx;
+                        LastHeavyBonusPlayerColor = col;
+                    }
+                }
+
+                // TwinTop
+                if (PlayerArchetype == PlayerArchetype.TwinTop)
+                {
+                    result = RoundSimulator.ApplyTwinTop_ChainSecondLoseToWin(
+                        result,
+                        _tuning.LoseThresholdExclusive,
+                        PlayerMainColor,
+                        PlayerSecondColor,
+                        _lastTwinTopBonusIndices,
+                        out var winFlip
+                    );
+
+                    LastTwinTopBonusWinCount = winFlip;
+                }
+
+                // ★最後に：Balanceログの「勝ち/引き分け」を最終結果に合わせて更新
+                if (LastBalanceBonusApplied && LastBalanceBonusIndex >= 0 && LastBalanceBonusIndex < result.Outcomes.Count)
+                {
+                    LastBalanceBonusResult = result.Outcomes[LastBalanceBonusIndex];
+                }
             }
             else
             {
@@ -201,7 +314,6 @@ namespace RpsBuild.Core
 
                 for (int t = 0; t < MaxIntroTries; t++)
                 {
-                    // ★毎回デッキを作り直す（引き直し）
                     var pDeck = new Deck(PlayerProfile);
                     var eDeck = new Deck(enemyProfile);
 
@@ -211,7 +323,7 @@ namespace RpsBuild.Core
                         _tuning.HandCount,
                         _tuning.LoseThresholdExclusive,
                         _rng,
-                        forcedFirstColorForPlayer: forced
+                        forcedForPlayer: forced
                     );
 
                     if (last.IsClear)
@@ -222,26 +334,19 @@ namespace RpsBuild.Core
                     }
                 }
 
-                // 上限回しても勝てなかったら最後の結果を採用（ここに来るのはほぼ無いはず）
                 result = last;
-
             INTRO_DONE: ;
             }
 
-            // ---- stats update: "enemy actual hands" cumulative ----
+            // ---- stats update ----
             if (!_archetypeStats.TryGetValue(LastEnemyArchetype, out var st))
                 st = default;
 
             st.AddHands(result.EnemyHands);
             _archetypeStats[LastEnemyArchetype] = st;
 
-
-
-            // クリア失敗ならミス増加
             if (!result.IsClear) MissCount++;
 
-            // クリア成功＆欠損あり → 欠損色ごとにゲージ増加
-            // // クリア成功ならポイント報酬
             if (result.IsClear)
             {
                 Points += _tuning.PointsPerClear;
@@ -251,7 +356,6 @@ namespace RpsBuild.Core
             LastGaugeGainGu = 0f;
             LastGaugeGainChoki = 0f;
             LastGaugeGainPa = 0f;
-
 
             if (result.IsClear && result.MissingColors.Count > 0)
             {
@@ -266,17 +370,14 @@ namespace RpsBuild.Core
                         case RpsColor.Choki: LastGaugeGainChoki += gain; break;
                         case RpsColor.Pa:    LastGaugeGainPa += gain; break;
                     }
-
                 }
             }
 
             RoundIndex++;
-
-            // 次ラウンド用プレビューを作っておく（Resolve/Adjustで表示するため）
             GenerateEnemyPreview();
-
             return result;
         }
+
 
         /// <summary>
         /// ラウンド間のデッキ調整（最小限の雛形）。
@@ -286,6 +387,7 @@ namespace RpsBuild.Core
         {
             if (profile.Total != 30) throw new ArgumentException("Player deck must total 30.");
             PlayerProfile = profile;
+            RecalcPlayerArchetype();
         }
 
         private void GenerateEnemyPreview()
@@ -344,6 +446,7 @@ namespace RpsBuild.Core
             // ここで消費確定
             Points -= amount;
             PlayerProfile = cur;
+            RecalcPlayerArchetype();
             return true;
         }
 
@@ -382,18 +485,6 @@ namespace RpsBuild.Core
             return true;
         }
 
-
-
-        /// <summary>
-        /// 予約を解除（ユーザに優しく：やっぱやめる）
-        /// — ゲージは消費しない
-        /// </summary>
-        public bool TryCancelReservedForcedFirst()
-        {
-            if (!ReservedForcedFirstColor.HasValue) return false;
-            ReservedForcedFirstColor = null;
-            return true;
-        }
 
         public ArchetypeHandStat GetArchetypeHandStat(EnemyArchetype archetype)
         {
@@ -459,6 +550,86 @@ namespace RpsBuild.Core
             _enemySecondColorByArchetype[EnemyArchetype.TwinTop] = twinSecond;
             _enemyProfilesByArchetype[EnemyArchetype.TwinTop] = _enemyGen.GenerateTwinTopFixed(_rng, twinMain, twinSecond);
         }
+
+        private void RecalcPlayerArchetype()
+                {
+                    var info = PlayerArchetypeClassifier.Classify(PlayerProfile);
+                    PlayerArchetype = info.Archetype;
+                    PlayerMainColor = info.MainColor;
+                    PlayerSecondColor = info.SecondColor;
+                }
+
+                // Assets/Scripts/Core/RunController.cs
+                // RunState クラス内に追加（どこでもOK）
+
+        private bool TryGetChargedGaugeColorForBalance(out RpsColor color)
+                {
+                    // 優先順は固定でOK（将来 “最大ゲージ色” にしたければここを変えるだけ）
+                    // ※今回は「満タンを消費する」仕様なので IsCharged 前提
+                    if (Gauge.IsCharged(RpsColor.Gu)) { color = RpsColor.Gu; return true; }
+                    if (Gauge.IsCharged(RpsColor.Choki)) { color = RpsColor.Choki; return true; }
+                    if (Gauge.IsCharged(RpsColor.Pa)) { color = RpsColor.Pa; return true; }
+
+                    color = RpsColor.Gu;
+                    return false;
+                }
+
+                public bool TryReserveForcedFirst(RpsColor color)
+                {
+                    if (!PlayerProfile.Has(color)) return false;
+
+                    int cap = Gauge.GetChargedCount(color);
+                    int cur = 0;
+                    for (int i = 0; i < _reservedForcedOrder.Count; i++)
+                        if (_reservedForcedOrder[i] == color) cur++;
+
+                    if (cur >= cap) return false;
+
+                    _reservedForcedOrder.Add(color);
+                    return true;
+                }
+
+
+
+
+
+        public bool TryCancelReservedForcedFirst()
+                {
+                    // 最小差分：全解除
+                    if (_reservedForcedOrder.Count <= 0) return false;
+                    _reservedForcedOrder.Clear();
+                    return true;
+                }
+
+        // 互換：旧UIが参照しても落ちないように
+        public RpsColor? ReservedForcedFirst
+                    => (_reservedForcedOrder != null && _reservedForcedOrder.Count > 0)
+                        ? _reservedForcedOrder[0]
+                        : (RpsColor?)null;
+
+        private int CountReserved(RpsColor c)
+            {
+                            int n = 0;
+                            for (int i = 0; i < _reservedForcedOrder.Count; i++)
+                                if (_reservedForcedOrder[i] == c) n++;
+                            return n;
+            }
+
+        public void ClearReservedForcedOrder()
+            {
+                            _reservedForcedOrder.Clear();
+            }
+
+        public void SetReservedForcedOrder(System.Collections.Generic.List<RpsColor> order)
+            {
+                _reservedForcedOrder.Clear();
+                if (order == null || order.Count == 0) return;
+
+                // ここでは "チェックしない"（Adjust側で検証済み）
+                _reservedForcedOrder.AddRange(order);
+            }
+
+
 
 
 

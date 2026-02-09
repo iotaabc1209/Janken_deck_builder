@@ -5,6 +5,7 @@ using RpsBuild.Core;
 public sealed class GameHudView : MonoBehaviour
 {
     [Header("TMP")]
+    [SerializeField] private TMP_Text nextEnemyText; // 大きい「次の敵」専用
     [SerializeField] private TMP_Text headerText;   // 左上：敵/環境/次の敵
     [SerializeField] private TMP_Text roundLogText; // ログ（任意）
 
@@ -37,6 +38,9 @@ public sealed class GameHudView : MonoBehaviour
             // 次の敵（手＋アーキタイプ）
             string nextEnemyLabel =
                 run.PreviewEnemyArchetype.ToJaLabel(run.PreviewEnemyMainColor);
+
+            if (nextEnemyText != null)
+                nextEnemyText.text = $"次の敵：{nextEnemyLabel}";
 
             // 環境 行（1行分）
             string EnvLine(EnemyArchetype a, float w)
@@ -99,10 +103,9 @@ public sealed class GameHudView : MonoBehaviour
             string statsText = statSb.ToString();
 
             headerText.text =
-                $"次の敵：{nextEnemyLabel}\n" +
-                "\n" +
+
                 $"環境：\n{envText}\n" +
-                "\n" +
+                "統計：\n" +
                 $"{statsText}";
         }
 

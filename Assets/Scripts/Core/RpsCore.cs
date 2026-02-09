@@ -73,24 +73,46 @@ namespace RpsBuild.Core
 
         public DeckProfile Profile => _profile;
 
-        public List<RpsColor> DrawBatch(int handCount, IRng rng, RpsColor? forcedFirst = null)
+        // Deck.DrawBatch シグネチャ変更
+        public List<RpsColor> DrawBatch(
+            int handCount,
+            IRng rng,
+            RpsColor? forcedFirst = null,
+            System.Collections.Generic.IReadOnlyList<RpsColor> forcedOrder = null)
         {
             if (handCount <= 0) throw new ArgumentOutOfRangeException(nameof(handCount));
 
-            var pool = BuildPool(); // 30枚のリスト
+            var pool = BuildPool();
             Shuffle(pool, rng);
 
-            // 1手目だけ確定
-            if (forcedFirst.HasValue)
+            // ★複数確定（優先）
+            if (forcedOrder != null && forcedOrder.Count > 0)
             {
+                int kMax = Math.Min(handCount, forcedOrder.Count);
+                for (int k = 0; k < kMax; k++)
+                {
+                    var c = forcedOrder[k];
+                    if (!_profile.Has(c)) continue; // 安全策
+
+                    // k番目以降から探して、見つかったら k に持ってくる
+                    int idx = pool.FindIndex(k, x => x == c);
+                    if (idx >= 0)
+                    {
+                        var temp = pool[k];
+                        pool[k] = pool[idx];
+                        pool[idx] = temp;
+                    }
+                }
+            }
+            else if (forcedFirst.HasValue)
+            {
+                // 旧：1手目だけ確定（互換維持）
                 var c = forcedFirst.Value;
-                // デッキにその色が入っていないなら確定できない（権利UI側で弾く想定だが安全策）
                 if (_profile.Has(c))
                 {
                     int idx = pool.FindIndex(x => x == c);
                     if (idx >= 0)
                     {
-                        // idxのカードを先頭に持ってくる
                         var temp = pool[0];
                         pool[0] = pool[idx];
                         pool[idx] = temp;
@@ -98,13 +120,14 @@ namespace RpsBuild.Core
                 }
             }
 
-            // 7枚など必要枚数だけ切り出し（山札は毎ラウンド「内訳から再生成」＝テンポ優先）
             var result = new List<RpsColor>(handCount);
             for (int i = 0; i < handCount; i++)
                 result.Add(pool[i]);
 
             return result;
         }
+
+
 
         private List<RpsColor> BuildPool()
         {
@@ -149,27 +172,39 @@ namespace RpsBuild.Core
         public void SetMax(float max)
         {
             Max = Math.Max(0.0001f, max);
-            // clamp
-            foreach (var c in new[] { RpsColor.Gu, RpsColor.Choki, RpsColor.Pa })
-                _g[c] = Math.Min(_g[c], Max);
+            // ★ clamp しない（スタックを許可）
         }
+
+        public void Add(RpsColor c, float amount)
+        {
+            if (amount <= 0f) return;
+            _g[c] = _g[c] + amount; // ★ clampしない
+        }
+
+
 
         public float Get(RpsColor c) => _g[c];
 
         public bool IsCharged(RpsColor c) => _g[c] >= Max - 1e-6f;
 
-        public void Add(RpsColor c, float amount)
-        {
-            if (amount <= 0f) return;
-            _g[c] = Math.Min(Max, _g[c] + amount);
-        }
-
         public bool TryConsumeCharged(RpsColor c)
         {
-            if (!IsCharged(c)) return false;
-            _g[c] = 0f;
+            if (_g[c] < Max - 1e-6f) return false;
+            _g[c] = Math.Max(0f, _g[c] - Max);
             return true;
         }
+
+
+        public int GetChargedCount(RpsColor c)
+        {
+            // 1.999999 を 2 と見なすためのε（IsCharged と同じ思想）
+            double v = _g[c];
+            double m = Max;
+            if (m <= 1e-9) return 0;
+
+            return (int)System.Math.Floor((v + 1e-6) / m);
+        }
+
     }
 
     /// <summary>
@@ -237,12 +272,15 @@ namespace RpsBuild.Core
             Deck playerDeck,
             Deck enemyDeck,
             int handCount,
-            int loseThresholdExclusive, // 例：3回以上で失敗なら threshold=3（LossCount>=3 が失敗）
+            int loseThresholdExclusive,
             IRng rng,
-            RpsColor? forcedFirstColorForPlayer = null)
+            RpsColor? forcedFirstColorForPlayer = null,
+            System.Collections.Generic.IReadOnlyList<RpsColor> forcedForPlayer = null)
         {
-            var p = playerDeck.DrawBatch(handCount, rng, forcedFirstColorForPlayer);
-            var e = enemyDeck.DrawBatch(handCount, rng, forcedFirst: null);
+            var p = playerDeck.DrawBatch(handCount, rng,
+                forcedFirst: forcedFirstColorForPlayer,
+                forcedOrder: forcedForPlayer);
+            var e = enemyDeck.DrawBatch(handCount, rng, forcedOrder: null);
 
             var outcomes = new List<RpsOutcome>(handCount);
             int losses = 0;
@@ -271,6 +309,60 @@ namespace RpsBuild.Core
             return new RoundResult(handCount, p, e, outcomes, losses, clear, missing);
         }
 
+        public static RoundResult ApplyHeavy_FirstLoseToWin(
+            RoundResult rr,
+            int loseThresholdExclusive,
+            RpsColor onlyColor,
+            out bool applied,
+            out int changedIndex,
+            out RpsColor changedPlayerColor)
+        {
+            applied = false;
+            changedIndex = -1;
+            changedPlayerColor = RpsColor.Gu;
+
+            if (rr == null) return rr;
+            if (rr.Outcomes == null || rr.PlayerHands == null) return rr;
+
+            int firstLose = -1;
+            for (int i = 0; i < rr.Outcomes.Count; i++)
+            {
+                if (rr.Outcomes[i] != RpsOutcome.Lose) continue;
+
+                if (i >= rr.PlayerHands.Count) continue;
+                if (rr.PlayerHands[i] != onlyColor) continue;
+
+                firstLose = i;
+                break;
+            }
+            if (firstLose < 0) return rr;
+
+
+            var outcomes2 = new List<RpsOutcome>(rr.Outcomes);
+            outcomes2[firstLose] = RpsOutcome.Win;
+
+            int losses2 = 0;
+            for (int i = 0; i < outcomes2.Count; i++)
+                if (outcomes2[i] == RpsOutcome.Lose) losses2++;
+
+            bool clear2 = losses2 < loseThresholdExclusive;
+
+            applied = true;
+            changedIndex = firstLose;
+            if (firstLose < rr.PlayerHands.Count)
+                changedPlayerColor = rr.PlayerHands[firstLose];
+
+            return new RoundResult(
+                rr.HandCount,
+                rr.PlayerHands,
+                rr.EnemyHands,
+                outcomes2,
+                losses2,
+                clear2,
+                rr.MissingColors
+            );
+        }
+
         public static RpsOutcome Judge(RpsColor player, RpsColor enemy)
         {
             if (player == enemy) return RpsOutcome.Tie;
@@ -284,5 +376,244 @@ namespace RpsBuild.Core
                 _ => RpsOutcome.Lose
             };
         }
+
+        public static RoundResult ApplyTwinTop_ChainSecondLoseToWin(
+            RoundResult rr,
+            int loseThresholdExclusive,
+            RpsColor mainColor,
+            RpsColor secondColor,
+            List<int> changedIndices,
+            out int winFlipCount)
+        {
+            winFlipCount = 0;
+            if (changedIndices != null) changedIndices.Clear();
+
+            if (rr == null) return rr;
+            if (rr.PlayerHands == null || rr.Outcomes == null) return rr;
+
+            int n = rr.PlayerHands.Count;
+            if (rr.Outcomes.Count < n) n = rr.Outcomes.Count;
+            if (n < 3) return rr;
+
+            var outcomes2 = new List<RpsOutcome>(rr.Outcomes);
+
+            // i = 2..n-1 が「3手目（最後）」＝ 123,234,... を見る
+            for (int i = 2; i < n; i++)
+            {
+                var a = rr.PlayerHands[i - 2];
+                var b = rr.PlayerHands[i - 1];
+                var c = rr.PlayerHands[i];
+
+                // 3手が main/second の交互になっているか
+                bool isTripleChain =
+                    (a == mainColor   && b == secondColor && c == mainColor) ||
+                    (a == secondColor && b == mainColor   && c == secondColor);
+
+                if (!isTripleChain) continue;
+
+                // ★勝敗判定は最後（i）だけ
+                if (outcomes2[i] == RpsOutcome.Lose)
+                {
+                    outcomes2[i] = RpsOutcome.Win;
+                    winFlipCount++;
+
+                    if (changedIndices != null)
+                        changedIndices.Add(i);
+                }
+            }
+
+            if (winFlipCount <= 0)
+                return rr;
+
+            int losses2 = 0;
+            for (int i = 0; i < outcomes2.Count; i++)
+                if (outcomes2[i] == RpsOutcome.Lose) losses2++;
+
+            bool clear2 = losses2 < loseThresholdExclusive;
+
+            return new RoundResult(
+                rr.HandCount,
+                rr.PlayerHands,
+                rr.EnemyHands,
+                outcomes2,
+                losses2,
+                clear2,
+                rr.MissingColors
+            );
+        }
+
+
+
+        public static RoundResult ApplyBalance_ChargedGaugeReplaceOneHand(
+            RoundResult rr,
+            int loseThresholdExclusive,
+            DeckProfile playerProfile,
+            RpsColor replaceColor,
+            out bool applied,
+            out int changedIndex,
+            out RpsColor fromColor,
+            out RpsColor toColor,
+            out RpsOutcome resultAtIndex,
+            out bool createdMissing)
+        {
+            applied = false;
+            changedIndex = -1;
+            fromColor = RpsColor.Gu;
+            toColor = replaceColor;
+            resultAtIndex = RpsOutcome.Tie;
+            createdMissing = false;
+
+            if (rr == null) return rr;
+            if (rr.PlayerHands == null || rr.EnemyHands == null || rr.Outcomes == null) return rr;
+
+            int handCount = rr.HandCount;
+            if (handCount <= 0) return rr;
+
+            int oldLosses = rr.LossCount;
+            int oldMissingCount = rr.MissingColors != null ? rr.MissingColors.Count : 0;
+
+            int bestIndex = -1;
+            int bestMissingCount = oldMissingCount;
+            int bestLossDelta = 0;
+
+            for (int i = 0; i < handCount && i < rr.PlayerHands.Count; i++)
+            {
+                if (rr.PlayerHands[i] == replaceColor) continue;
+
+                var p2 = new List<RpsColor>(rr.PlayerHands);
+                p2[i] = replaceColor;
+
+                var outcomes2 = new List<RpsOutcome>(handCount);
+                int losses2 = 0;
+                for (int k = 0; k < handCount && k < rr.EnemyHands.Count && k < p2.Count; k++)
+                {
+                    var o = Judge(p2[k], rr.EnemyHands[k]);
+                    outcomes2.Add(o);
+                    if (o == RpsOutcome.Lose) losses2++;
+                }
+
+                var seen = new HashSet<RpsColor>();
+                for (int k = 0; k < handCount && k < p2.Count; k++)
+                    seen.Add(p2[k]);
+
+                int missingCount2 = 0;
+                foreach (var c in new[] { RpsColor.Gu, RpsColor.Choki, RpsColor.Pa })
+                {
+                    if (playerProfile.Has(c) && !seen.Contains(c))
+                        missingCount2++;
+                }
+
+                int lossDelta = oldLosses - losses2;
+
+                bool improvesMissing = (missingCount2 > oldMissingCount);
+                bool bestImprovesMissing = (bestMissingCount > oldMissingCount);
+
+                if (improvesMissing && !bestImprovesMissing)
+                {
+                    bestIndex = i;
+                    bestMissingCount = missingCount2;
+                    bestLossDelta = lossDelta;
+                    continue;
+                }
+
+                if (improvesMissing && bestImprovesMissing)
+                {
+                    bool candSafe = (lossDelta >= 0);
+                    bool bestSafe = (bestLossDelta >= 0);
+
+                    if (candSafe && !bestSafe)
+                    {
+                        bestIndex = i;
+                        bestMissingCount = missingCount2;
+                        bestLossDelta = lossDelta;
+                        continue;
+                    }
+
+                    if (candSafe == bestSafe)
+                    {
+                        if (lossDelta > bestLossDelta)
+                        {
+                            bestIndex = i;
+                            bestMissingCount = missingCount2;
+                            bestLossDelta = lossDelta;
+                            continue;
+                        }
+                        if (lossDelta == bestLossDelta && bestIndex >= 0 && i < bestIndex)
+                        {
+                            bestIndex = i;
+                            bestMissingCount = missingCount2;
+                            bestLossDelta = lossDelta;
+                            continue;
+                        }
+                    }
+
+                    continue;
+                }
+
+                if (!bestImprovesMissing)
+                {
+                    if (lossDelta > bestLossDelta)
+                    {
+                        bestIndex = i;
+                        bestMissingCount = missingCount2;
+                        bestLossDelta = lossDelta;
+                        continue;
+                    }
+                    if (lossDelta == bestLossDelta && bestIndex >= 0 && i < bestIndex)
+                    {
+                        bestIndex = i;
+                        bestMissingCount = missingCount2;
+                        bestLossDelta = lossDelta;
+                        continue;
+                    }
+                }
+            }
+
+            if (bestIndex < 0)
+                return rr;
+
+            // 最終確定の再計算
+            var finalP = new List<RpsColor>(rr.PlayerHands);
+            fromColor = finalP[bestIndex];
+            finalP[bestIndex] = replaceColor;
+
+            var finalOutcomes = new List<RpsOutcome>(handCount);
+            int finalLosses = 0;
+            var finalSeen = new HashSet<RpsColor>();
+
+            for (int k = 0; k < handCount && k < rr.EnemyHands.Count && k < finalP.Count; k++)
+            {
+                finalSeen.Add(finalP[k]);
+                var o = Judge(finalP[k], rr.EnemyHands[k]);
+                finalOutcomes.Add(o);
+                if (o == RpsOutcome.Lose) finalLosses++;
+            }
+
+            bool finalClear = finalLosses < loseThresholdExclusive;
+
+            var finalMissing = new List<RpsColor>(3);
+            foreach (var c in new[] { RpsColor.Gu, RpsColor.Choki, RpsColor.Pa })
+            {
+                if (playerProfile.Has(c) && !finalSeen.Contains(c))
+                    finalMissing.Add(c);
+            }
+
+            applied = true;
+            changedIndex = bestIndex;
+            toColor = replaceColor;
+            if (bestIndex < finalOutcomes.Count) resultAtIndex = finalOutcomes[bestIndex];
+            createdMissing = (finalMissing.Count > oldMissingCount);
+
+            return new RoundResult(
+                handCount,
+                finalP,
+                rr.EnemyHands,
+                finalOutcomes,
+                finalLosses,
+                finalClear,
+                finalMissing
+            );
+        }
+
     }
 }

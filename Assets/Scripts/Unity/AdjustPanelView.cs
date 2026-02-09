@@ -11,7 +11,7 @@ public sealed class AdjustPanelView : MonoBehaviour
     [Header("Texts")]
     [SerializeField] private TMP_Text pointsText;
     [SerializeField] private TMP_Text deckText;    // "G/C/P"
-    [SerializeField] private TMP_Text gaugeText;   // "G/C/P"
+    [SerializeField] private TMP_Text playerArchetypeText;
 
     [Header("Deck Adjust (Draft) : +1 / -1 per color")]
     [SerializeField] private Button deckPlusGu;
@@ -46,14 +46,11 @@ public sealed class AdjustPanelView : MonoBehaviour
     private readonly int[] _sub = new int[3];
     // Adjust中の「ゲージ購入」ドラフト（色ごとの購入回数）
     // Gauge draft（デッキの _add/_sub と同型）
-    private readonly int[] _gaugeAdd = new int[3];
-    private readonly int[] _gaugeSub = new int[3];
+    private readonly int[] _gaugeBuy = new int[3];
 
     // Adjust中の「確定ドロー予約」ドラフト
-    private RpsColor? _draftForcedFirstColor = null;
+    private readonly System.Collections.Generic.List<RpsColor> _draftForcedOrder = new();
 
-    // ForcedFirstToggleView から参照する用（Adjust中表示）
-    public RpsColor? DraftForcedFirstColor => _draftForcedFirstColor;
 
 
     // Adjust開始時点のポイント（分母固定用）
@@ -78,7 +75,7 @@ public sealed class AdjustPanelView : MonoBehaviour
         deckText.text = $"デッキ：グー/チョキ/パー： {prof.Gu}/{prof.Choki}/{prof.Pa}";
 
         ResetDraft();   // Adjustに入るたびドラフトを初期化（ここは好みで変更可）
-        _draftForcedFirstColor = presenter.Run.ReservedForcedFirst; // 基本nullのはずだが保険
+        _draftForcedOrder.Clear(); // 基本nullのはずだが保険
         Refresh();
     }
 
@@ -104,28 +101,40 @@ public sealed class AdjustPanelView : MonoBehaviour
         if (countChokiText != null) countChokiText.color = col;
         if (countPaText != null)    countPaText.color = col;
 
+        if (playerArchetypeText != null)
+        {
+            playerArchetypeText.color = col;
+
+            if (!okTotal)
+            {
+                playerArchetypeText.text = "自分：—（合計30で確定）";
+            }
+            else
+            {
+                // ★30枚のときだけ判定して表示
+                // ここは「あなたの PlayerArchetype.cs の判定API」に合わせて1行差し替えてOK。
+
+                // 例A：Classifyが (arch, main, second) を返す/埋める想定
+                // var info = PlayerArchetypeClassifier.Classify(shown);
+                // playerArchetypeText.text = $"自分：{info.ToJaLabel()}";
+
+                // 例B：outで返す想定（よくある形）
+                // PlayerArchetypeClassifier.Classify(shown, out var arch, out var main, out var second);
+                // playerArchetypeText.text = $"自分：{arch.ToJaLabel(main, second)}";
+
+                var info = PlayerArchetypeClassifier.Classify(shown);
+                playerArchetypeText.text = $"自分：{info.ToJaLabel()}";
+
+
+            }
+        }
+
 
         // 4. ポイント・ゲージなど既存表示
         if (pointsText != null) pointsText.text = $"　　x{PointsLeft()} / {_pointsBudget}";
 
         // ゲージ表示（ドラフト購入分を含めた「見かけ」） ---
         float buy = run.Tuning.GaugeBuyAmount;
-
-        float gGu = Mathf.Min(run.Gauge.Max,
-            run.Gauge.Get(RpsColor.Gu)
-            + (_gaugeAdd[(int)RpsColor.Gu] - _gaugeSub[(int)RpsColor.Gu]) * buy);
-
-        float gCh = Mathf.Min(run.Gauge.Max,
-            run.Gauge.Get(RpsColor.Choki)
-            + (_gaugeAdd[(int)RpsColor.Choki] - _gaugeSub[(int)RpsColor.Choki]) * buy);
-
-        float gPa = Mathf.Min(run.Gauge.Max,
-            run.Gauge.Get(RpsColor.Pa)
-            + (_gaugeAdd[(int)RpsColor.Pa] - _gaugeSub[(int)RpsColor.Pa]) * buy);
-
-
-        if (gaugeText != null)
-            gaugeText.text = "";
 
 
             // ボタン押下可否（ユーザに優しく）
@@ -156,55 +165,21 @@ public sealed class AdjustPanelView : MonoBehaviour
             // ---- BuyGauge buttons (same policy as deck adjust) ----
 
             // canBuyGaugeAdd/CanBuyGaugeSub はデッキと同じく「予算内か」で判定（黄色なし）
+            // ---- BuyGauge buttons (gauge buy only; minus = cancel only) ----
             bool canGaugeAdd = CanGaugeAdd(run);
-            bool canGaugeSub = CanGaugeSub(run);
 
-            // 相殺できるなら「ポイント0でも押せる」（デッキと同型）
-            bool canGaugeCancelPlusGu    = _gaugeSub[(int)RpsColor.Gu] > 0;
-            bool canGaugeCancelPlusChoki = _gaugeSub[(int)RpsColor.Choki] > 0;
-            bool canGaugeCancelPlusPa    = _gaugeSub[(int)RpsColor.Pa] > 0;
+            // + は「予算OK」かつ「その色のremが満タンじゃない」なら押せる
+            if (buyGaugePlusGu != null)    buyGaugePlusGu.interactable    = CanGaugeAdd(run) && CanGaugeActuallyIncrease(RpsColor.Gu, run);
+            if (buyGaugePlusChoki != null) buyGaugePlusChoki.interactable = CanGaugeAdd(run) && CanGaugeActuallyIncrease(RpsColor.Choki, run);
+            if (buyGaugePlusPa != null)    buyGaugePlusPa.interactable    = CanGaugeAdd(run) && CanGaugeActuallyIncrease(RpsColor.Pa, run);
 
-            bool canGaugeCancelMinusGu    = _gaugeAdd[(int)RpsColor.Gu] > 0;
-            bool canGaugeCancelMinusChoki = _gaugeAdd[(int)RpsColor.Choki] > 0;
-            bool canGaugeCancelMinusPa    = _gaugeAdd[(int)RpsColor.Pa] > 0;
+            // - は「その色の購入予約がある」なら押せる（返金=コスト減）
+            if (buyGaugeMinusGu != null)    buyGaugeMinusGu.interactable    = CanGaugeActuallyDecrease(RpsColor.Gu, run);
+            if (buyGaugeMinusChoki != null) buyGaugeMinusChoki.interactable = CanGaugeActuallyDecrease(RpsColor.Choki, run);
+            if (buyGaugeMinusPa != null)    buyGaugeMinusPa.interactable    = CanGaugeActuallyDecrease(RpsColor.Pa, run);
 
-            // interactable（押せる/押せない）
-            if (buyGaugePlusGu != null)
-                buyGaugePlusGu.interactable =
-                    (canGaugeAdd && CanGaugeActuallyIncrease(RpsColor.Gu, run))
-                    || canGaugeCancelPlusGu;
-
-            if (buyGaugePlusChoki != null)
-                buyGaugePlusChoki.interactable =
-                    (canGaugeAdd && CanGaugeActuallyIncrease(RpsColor.Choki, run))
-                    || canGaugeCancelPlusChoki;
-
-            if (buyGaugePlusPa != null)
-                buyGaugePlusPa.interactable =
-                    (canGaugeAdd && CanGaugeActuallyIncrease(RpsColor.Pa, run))
-                    || canGaugeCancelPlusPa;
-
-
-            // GaugeMinus は
-            // 1) 本当に減らせる  OR
-            // 2) 同色の + を相殺できる
-            if (buyGaugeMinusGu != null)
-                buyGaugeMinusGu.interactable =
-                    (canGaugeSub && CanGaugeActuallyDecrease(RpsColor.Gu, run))
-                    || canGaugeCancelMinusGu;
-
-            if (buyGaugeMinusChoki != null)
-                buyGaugeMinusChoki.interactable =
-                    (canGaugeSub && CanGaugeActuallyDecrease(RpsColor.Choki, run))
-                    || canGaugeCancelMinusChoki;
-
-            if (buyGaugeMinusPa != null)
-                buyGaugeMinusPa.interactable =
-                    (canGaugeSub && CanGaugeActuallyDecrease(RpsColor.Pa, run))
-                    || canGaugeCancelMinusPa;
-
+            ValidateDraftForcedOrder();
             RefreshGaugePreview();
-            ValidateDraftForcedFirst();
             OnDraftChanged?.Invoke();
 
 
@@ -213,27 +188,52 @@ public sealed class AdjustPanelView : MonoBehaviour
     // RoundFlowUI から「次へ」を押す前にチェックする用
     public bool CanProceedToNextRound()
     {
-        if (presenter == null || presenter.Run == null) return false;
+        if (presenter == null || presenter.Run == null) { Debug.Log("[CanProceed] presenter/run null"); return false; }
+
+        ValidateDraftForcedOrder(); // 入れてるなら残す
 
         var run = presenter.Run;
         var shown = GetShownProfile(run.PlayerProfile);
 
-        // 30枚制約
-        if (shown.Total != 30) return false;
+        if (shown.Total != 30) { Debug.Log($"[CanProceed] blocked: deck total {shown.Total} != 30"); return false; }
 
-        // 予算は Adjust開始時点の固定分母で判定（Commitと揃える）
-        if (DraftCost() > _pointsBudget) return false;
+        int cost = DraftCost();
+        if (cost > _pointsBudget) { Debug.Log($"[CanProceed] blocked: cost {cost} > budget {_pointsBudget}"); return false; }
 
-        // B1: 予約ドラフトがあるなら成立条件を満たしている必要
-        if (_draftForcedFirstColor.HasValue)
+        if (_draftForcedOrder.Count > run.Tuning.HandCount)
         {
-            var c = _draftForcedFirstColor.Value;
-            if (!shown.Has(c)) return false;
-            if (!IsShownGaugeCharged(c, run)) return false;
+            Debug.Log($"[CanProceed] blocked: forced count {_draftForcedOrder.Count} > hand {run.Tuning.HandCount}");
+            return false;
+        }
+
+        if (_draftForcedOrder.Count > 0)
+        {
+            // 色がデッキにあるか
+            for (int i = 0; i < _draftForcedOrder.Count; i++)
+            {
+                var c = _draftForcedOrder[i];
+                if (!shown.Has(c)) { Debug.Log($"[CanProceed] blocked: deck has no {c} (shown)"); return false; }
+            }
+
+            // ★ここが怪しい本丸：色別上限
+            int maxGu = GetShownChargedCount(RpsColor.Gu, run);
+            int maxCh = GetShownChargedCount(RpsColor.Choki, run);
+            int maxPa = GetShownChargedCount(RpsColor.Pa, run);
+
+            int nGu = GetDraftForcedCount(RpsColor.Gu);
+            int nCh = GetDraftForcedCount(RpsColor.Choki);
+            int nPa = GetDraftForcedCount(RpsColor.Pa);
+
+            Debug.Log($"[CanProceed] forced Gu {nGu}/{maxGu} Ch {nCh}/{maxCh} Pa {nPa}/{maxPa}  gaugeNoClamp Gu={GetShownGaugeValue_NoClamp(RpsColor.Gu, run):0.###}");
+
+            if (nGu > maxGu) return false;
+            if (nCh > maxCh) return false;
+            if (nPa > maxPa) return false;
         }
 
         return true;
     }
+
 
 
 
@@ -249,9 +249,10 @@ public sealed class AdjustPanelView : MonoBehaviour
         if (shown.Total != 30) return false;
 
         // コスト計算（デッキ + ゲージ）
-        int deckCost = DeckDraftCost();
+        int totalCost = DraftCost();
         int gaugeCost = GaugeDraftCost();
-        int totalCost = deckCost + gaugeCost;
+        int deckCost = totalCost - gaugeCost;
+
 
         // 予算オーバー防止（分母は _pointsBudget）
         if (totalCost > _pointsBudget) return false;
@@ -275,24 +276,20 @@ public sealed class AdjustPanelView : MonoBehaviour
 
         for (int i = 0; i < 3; i++)
         {
-            int delta = _gaugeAdd[i] - _gaugeSub[i];
-            if (delta > 0)
-            {
-                run.Gauge.Add((RpsColor)i, delta * buy);
-            }
+            int buyCount = _gaugeBuy[i];
+            if (buyCount > 0)
+                run.Gauge.Add((RpsColor)i, buyCount * buy);
         }
 
-        // --- 2.5) 確定ドロー予約を確定（ゲージ確定後なので成功する） ---
-        if (_draftForcedFirstColor.HasValue)
-        {
-            var c = _draftForcedFirstColor.Value;
-            bool ok = run.TryReserveForcedFirst(c);
-            if (!ok) return false;
-        }
 
+
+        run.SetReservedForcedOrder(
+            new System.Collections.Generic.List<RpsColor>(_draftForcedOrder)
+        );
 
         // --- 3) ドラフトリセット ---
         ResetDraft();
+        _draftForcedOrder.Clear();
 
         // ★ 実ゲージを直接表示させる
         gaugeBarView.SetGauge(
@@ -308,11 +305,10 @@ public sealed class AdjustPanelView : MonoBehaviour
 
 
 
-    private int DeckDraftCost()
+    // GaugeDraftCost：買った分だけ課金
+    private int GaugeDraftCost()
     {
-        int sumAdd = _add[0] + _add[1] + _add[2];
-        int sumSub = _sub[0] + _sub[1] + _sub[2];
-        return (sumAdd > sumSub) ? sumAdd : sumSub;
+        return _gaugeBuy[0] + _gaugeBuy[1] + _gaugeBuy[2];
     }
 
 
@@ -394,63 +390,20 @@ public sealed class AdjustPanelView : MonoBehaviour
         if (presenter == null || presenter.Run == null) return;
         var run = presenter.Run;
 
-        int i = (int)c;
-
-        // ★ 相殺：同色の - 予約があれば先に打ち消す
-        if (_gaugeSub[i] > 0)
-        {
-            _gaugeSub[i] -= 1;
-            Refresh();
-            return;
-        }
-
-        // ★ 通常の + 予約（予算チェック）
         if (!CanGaugeAdd(run)) return;
-
-        // ★ すでに満タンなら増やせない（見かけゲージ基準）
         if (!CanGaugeActuallyIncrease(c, run)) return;
 
-        _gaugeAdd[i] += 1;
+        _gaugeBuy[(int)c] += 1;
         Refresh();
     }
 
     private void OnBuyGaugeMinus(RpsColor c)
     {
-        if (presenter == null || presenter.Run == null) return;
-        var run = presenter.Run;
-
         int i = (int)c;
-
-        // 相殺：同色の + 予約があれば先に打ち消す
-        if (_gaugeAdd[i] > 0)
-        {
-            _gaugeAdd[i] -= 1;
-            Refresh();
-            return;
-        }
-
-        // マイナス予約（＝買いを取り消す）を入れる
-        // ※0より下には行かせない（見かけゲージがマイナスにならないように）
-        float buy = run.Tuning.GaugeBuyAmount;
-        float current = run.Gauge.Get(c);
-        float after = current + (_gaugeAdd[i] - (_gaugeSub[i] + 1)) * buy;
-        if (after < 0f) return;
-
-        if (!CanGaugeSub(run)) return;
-        _gaugeSub[i] += 1;
+        if (_gaugeBuy[i] <= 0) return;   // 取り消す物がない
+        _gaugeBuy[i] -= 1;               // ←取り消し
         Refresh();
     }
-
-
-    private int GaugeDraftCost()
-    {
-        int sumAdd = _gaugeAdd[0] + _gaugeAdd[1] + _gaugeAdd[2];
-        int sumSub = _gaugeSub[0] + _gaugeSub[1] + _gaugeSub[2];
-        return Mathf.Max(sumAdd, sumSub);
-    }
-
-
-
 
     private DeckProfile GetShownProfile(DeckProfile baseProfile)
     {
@@ -463,7 +416,7 @@ public sealed class AdjustPanelView : MonoBehaviour
     private int DraftCost()
     {
         int deckCost = Mathf.Max(_add[0] + _add[1] + _add[2], _sub[0] + _sub[1] + _sub[2]);
-        int gaugeCost = GaugeDraftCost();
+        int gaugeCost = GaugeDraftCost(); // ←ここが「合計」になってる
         return deckCost + gaugeCost;
     }
 
@@ -474,18 +427,18 @@ public sealed class AdjustPanelView : MonoBehaviour
     }
 
 
+
     private void ResetDraft()
     {
         for (int i = 0; i < 3; i++)
         {
             _add[i] = 0;
             _sub[i] = 0;
-            _gaugeAdd[i] = 0;
-            _gaugeSub[i] = 0;
+            _gaugeBuy[i] = 0; // ←これ
         }
-        _draftForcedFirstColor = null;
-
+        _draftForcedOrder.Clear(); // あなたの現行に合わせて
     }
+
 
 
 
@@ -522,40 +475,21 @@ public sealed class AdjustPanelView : MonoBehaviour
 
     private bool CanGaugeAdd(RunState run)
     {
-        int sumAdd = _gaugeAdd[0] + _gaugeAdd[1] + _gaugeAdd[2];
-        int sumSub = _gaugeSub[0] + _gaugeSub[1] + _gaugeSub[2];
+        int gaugeCostAfter = GaugeDraftCost() + 1;
 
-        // 1増やした後のゲージコスト
-        int gaugeCostAfter = Mathf.Max(sumAdd + 1, sumSub);
-
-        // デッキ側の現コスト
-        int deckCost = Mathf.Max(_add[0] + _add[1] + _add[2], _sub[0] + _sub[1] + _sub[2]);
+        int deckCost =
+            Mathf.Max(_add[0] + _add[1] + _add[2],
+                      _sub[0] + _sub[1] + _sub[2]);
 
         return deckCost + gaugeCostAfter <= _pointsBudget;
     }
 
-    private bool CanGaugeSub(RunState run)
-    {
-        int sumAdd = _gaugeAdd[0] + _gaugeAdd[1] + _gaugeAdd[2];
-        int sumSub = _gaugeSub[0] + _gaugeSub[1] + _gaugeSub[2];
 
-        int gaugeCostAfter = Mathf.Max(sumAdd, sumSub + 1);
-
-        int deckCost = Mathf.Max(_add[0] + _add[1] + _add[2], _sub[0] + _sub[1] + _sub[2]);
-
-        return deckCost + gaugeCostAfter <= _pointsBudget;
-    }
 
     private bool CanGaugeActuallyDecrease(RpsColor c, RunState run)
     {
         int i = (int)c;
-        float buy = run.Tuning.GaugeBuyAmount;
-
-        float current =
-            run.Gauge.Get(c)
-            + (_gaugeAdd[i] - _gaugeSub[i]) * buy;
-
-        return current >= buy; // 1回分は減らせるか
+        return _gaugeBuy[i] > 0; // 取り消せる購入があるか
     }
 
     private void RefreshGaugePreview()
@@ -563,97 +497,206 @@ public sealed class AdjustPanelView : MonoBehaviour
         var run = presenter.Run;
         float buy = run.Tuning.GaugeBuyAmount;
 
-        float gu = run.Gauge.Get(RpsColor.Gu)
-                   + _gaugeAdd[(int)RpsColor.Gu] * buy
-                   - _gaugeSub[(int)RpsColor.Gu] * buy;
+        float gu = run.Gauge.Get(RpsColor.Gu) + _gaugeBuy[(int)RpsColor.Gu] * buy;
+        float ch = run.Gauge.Get(RpsColor.Choki) + _gaugeBuy[(int)RpsColor.Choki] * buy;
+        float pa = run.Gauge.Get(RpsColor.Pa) + _gaugeBuy[(int)RpsColor.Pa] * buy;
 
-        float ch = run.Gauge.Get(RpsColor.Choki)
-                   + _gaugeAdd[(int)RpsColor.Choki] * buy
-                   - _gaugeSub[(int)RpsColor.Choki] * buy;
+        // 予約中は「次で消費される」見せ方（Maxぶん減らす）
+        gu -= GetDraftForcedCount(RpsColor.Gu) * run.Gauge.Max;
+        ch -= GetDraftForcedCount(RpsColor.Choki) * run.Gauge.Max;
+        pa -= GetDraftForcedCount(RpsColor.Pa) * run.Gauge.Max;
 
-        float pa = run.Gauge.Get(RpsColor.Pa)
-                   + _gaugeAdd[(int)RpsColor.Pa] * buy
-                   - _gaugeSub[(int)RpsColor.Pa] * buy;
-
-        // ドラフト予約中は「その色は次ラウンド開始で消費される」見せ方
-        if (_draftForcedFirstColor == RpsColor.Gu) gu = 0f;
-        if (_draftForcedFirstColor == RpsColor.Choki) ch = 0f;
-        if (_draftForcedFirstColor == RpsColor.Pa) pa = 0f;
-
+        if (gu < 0f) gu = 0f;
+        if (ch < 0f) ch = 0f;
+        if (pa < 0f) pa = 0f;
 
         gaugeBarView.SetGauge(gu, ch, pa, run.Gauge.Max);
-        OnDraftChanged?.Invoke();
-
     }
+
 
     public bool ToggleDraftForcedFirst(RpsColor c)
     {
         if (presenter == null || presenter.Run == null) return false;
         var run = presenter.Run;
 
-        if (_draftForcedFirstColor == c)
+        var shownDeck = GetShownProfile(run.PlayerProfile);
+        if (!shownDeck.Has(c)) return false;
+
+        // この色で “今” 予約できる最大回数（ゲージとデッキから計算）
+        int maxByGauge = Mathf.FloorToInt(GetShownGaugeValue_NoClamp(c, run) / run.Gauge.Max);
+        int maxByDeck  = shownDeck.Get(c);
+        int maxByHand  = run.Tuning.HandCount;
+
+        int maxCount = Mathf.Min(maxByGauge, maxByDeck, maxByHand);
+        if (maxCount <= 0)
         {
-            _draftForcedFirstColor = null;
+            // 予約不能なら、この色の予約だけ消す（クリックでやり直しできる）
+            RemoveAllFromDraftOrder(c);
             Refresh();
             return true;
         }
 
-        var shownDeck = GetShownProfile(run.PlayerProfile);
-        if (!shownDeck.Has(c))
+        int cur = GetDraftForcedCount(c);
+
+        if (cur < maxCount)
         {
-            Debug.Log($"[ForcedDraft] blocked: deck has no {c} (shown)");
-            return false;
+            // 0->1->2...：末尾に追加（順番を記録）
+            _draftForcedOrder.Add(c);
+        }
+        else
+        {
+            // max->0：その色を全消し（順番ミスった時のやり直し）
+            RemoveAllFromDraftOrder(c);
         }
 
-        if (!IsShownGaugeCharged(c, run))
-        {
-            Debug.Log($"[ForcedDraft] blocked: gauge not charged {c} (shown={GetShownGaugeValue(c, run):0.###}, max={run.Gauge.Max:0.###})");
-            return false;
-        }
-
-        _draftForcedFirstColor = c;
         Refresh();
         return true;
     }
 
+    private void RemoveAllFromDraftOrder(RpsColor c)
+    {
+        for (int i = _draftForcedOrder.Count - 1; i >= 0; i--)
+            if (_draftForcedOrder[i] == c)
+                _draftForcedOrder.RemoveAt(i);
+    }
+
+
 
     private bool IsShownGaugeCharged(RpsColor c, RunState run)
     {
-        float v = GetShownGaugeValue(c, run);
+        float v = GetShownGaugeValue_NoClamp(c, run);
         return v >= run.Gauge.Max - 1e-6f;
     }
 
     private float GetShownGaugeValue(RpsColor c, RunState run)
     {
         float buy = run.Tuning.GaugeBuyAmount;
-        int i = (int)c;
-
-        float v = run.Gauge.Get(c) + (_gaugeAdd[i] - _gaugeSub[i]) * buy;
+        float v = run.Gauge.Get(c) + _gaugeBuy[(int)c] * buy;
         if (v < 0f) v = 0f;
         if (v > run.Gauge.Max) v = run.Gauge.Max;
         return v;
     }
 
+
+    private float GetShownGaugeValue_NoClamp(RpsColor c, RunState run)
+    {
+        float buy = run.Tuning.GaugeBuyAmount;
+        float v = run.Gauge.Get(c) + _gaugeBuy[(int)c] * buy;
+        if (v < 0f) v = 0f;
+        return v;
+    }
+
+
+
     private bool CanGaugeActuallyIncrease(RpsColor c, RunState run)
     {
         // 0.95でも「まだ満タンじゃない」なら買える
-        return GetShownGaugeValue(c, run) < run.Gauge.Max - 1e-6f;
+        // スタックがあっても「次の1回分が満タンか？」で増やせる/増やせないを決めたいなら余りを見る
+        float v = GetShownGaugeValue_NoClamp(c, run);
+        float rem = v - Mathf.Floor(v / run.Gauge.Max) * run.Gauge.Max;
+        return rem < run.Gauge.Max - 1e-6f;
     }
 
 
-
-
-    private void ValidateDraftForcedFirst()
+    // 色ごとの予約数（表示用）
+    public int GetDraftForcedCount(RpsColor c)
     {
-        if (! _draftForcedFirstColor.HasValue) return;
-        if (presenter == null || presenter.Run == null) { _draftForcedFirstColor = null; return; }
+        int n = 0;
+        for (int i = 0; i < _draftForcedOrder.Count; i++)
+            if (_draftForcedOrder[i] == c) n++;
+        return n;
+    }
+
+    public string GetDraftForcedOrderLabelJa()
+    {
+        if (_draftForcedOrder == null || _draftForcedOrder.Count <= 0)
+            return "";
+
+        var sb = new System.Text.StringBuilder();
+        for (int i = 0; i < _draftForcedOrder.Count; i++)
+        {
+            if (i > 0) sb.Append("→");
+            sb.Append(ToJpColor(_draftForcedOrder[i]));
+        }
+        return sb.ToString();
+    }
+
+    // AdjustPanelView 内に ToJpColor が無ければ追加（既にあるなら流用）
+    private static string ToJpColor(RpsColor c)
+    {
+        return c switch
+        {
+            RpsColor.Gu => "グー",
+            RpsColor.Choki => "チョキ",
+            _ => "パー"
+        };
+    }
+
+    private void ValidateDraftForcedOrder()
+    {
+        if (_draftForcedOrder == null || _draftForcedOrder.Count <= 0) return;
+        if (presenter == null || presenter.Run == null) { _draftForcedOrder.Clear(); return; }
 
         var run = presenter.Run;
         var shownDeck = GetShownProfile(run.PlayerProfile);
-        var c = _draftForcedFirstColor.Value;
 
-        if (!shownDeck.Has(c) || !IsShownGaugeCharged(c, run))
-            _draftForcedFirstColor = null;
+        // 色ごとの上限（ゲージスタック・デッキ枚数・手数）
+        int maxGu = Mathf.Min(
+            Mathf.FloorToInt(GetShownGaugeValue_NoClamp(RpsColor.Gu, run) / run.Gauge.Max),
+            shownDeck.Get(RpsColor.Gu),
+            run.Tuning.HandCount
+        );
+        int maxCh = Mathf.Min(
+            Mathf.FloorToInt(GetShownGaugeValue_NoClamp(RpsColor.Choki, run) / run.Gauge.Max),
+            shownDeck.Get(RpsColor.Choki),
+            run.Tuning.HandCount
+        );
+        int maxPa = Mathf.Min(
+            Mathf.FloorToInt(GetShownGaugeValue_NoClamp(RpsColor.Pa, run) / run.Gauge.Max),
+            shownDeck.Get(RpsColor.Pa),
+            run.Tuning.HandCount
+        );
+
+        // まず「デッキに無い色」は全部消す
+        for (int i = _draftForcedOrder.Count - 1; i >= 0; i--)
+        {
+            var c = _draftForcedOrder[i];
+            if (!shownDeck.Has(c)) _draftForcedOrder.RemoveAt(i);
+        }
+
+        // 次に「色ごとの上限」を超えた分を末尾から削る
+        while (GetDraftForcedCount(RpsColor.Gu) > maxGu) RemoveLastOf(RpsColor.Gu);
+        while (GetDraftForcedCount(RpsColor.Choki) > maxCh) RemoveLastOf(RpsColor.Choki);
+        while (GetDraftForcedCount(RpsColor.Pa) > maxPa) RemoveLastOf(RpsColor.Pa);
+
+        // 最後に「手数上限」を超えたら末尾から削る（安全）
+        while (_draftForcedOrder.Count > run.Tuning.HandCount)
+            _draftForcedOrder.RemoveAt(_draftForcedOrder.Count - 1);
     }
+
+    private void RemoveLastOf(RpsColor c)
+    {
+        for (int i = _draftForcedOrder.Count - 1; i >= 0; i--)
+        {
+            if (_draftForcedOrder[i] == c)
+            {
+                _draftForcedOrder.RemoveAt(i);
+                return;
+            }
+        }
+    }
+
+    private int GetShownChargedCount(RpsColor c, RunState run)
+    {
+        // 実ゲージ + 購入ドラフト の合計値（Maxでclampしない）
+        float v = GetShownGaugeValue_NoClamp(c, run);
+
+        // Core側と同じ ε で floor
+        return (int)System.Math.Floor((v + 1e-6f) / run.Gauge.Max);
+    }
+
+
+
+
 
 }

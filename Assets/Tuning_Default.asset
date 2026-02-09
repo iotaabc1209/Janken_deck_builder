@@ -17,7 +17,12 @@ MonoBehaviour:
   maxMiss: 3
   gaugeMax: 1
   gainScale: 1
-  gainDenominator: 30
+  gainDenominator: 10
   heavy: 0.6
   balance: 0.25
   twinTop: 0.15
+  shuffleEnvWeightsAcrossArchetypes: 1
+  uniqueMainAcrossArchetypes: 1
+  initialPoints: 10
+  pointsPerClear: 1
+  gaugeBuyAmount: 0.5

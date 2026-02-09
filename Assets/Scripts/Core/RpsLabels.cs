@@ -39,5 +39,29 @@ namespace RpsBuild.Core
         {
             return $"{mainColor.ToJa()}{a.ToJa()}";
         }
+
+        // ---- プレイヤーアーキタイプ ----
+        /// <summary>
+        /// UI表示用（プレイヤー）
+        /// 例）グー偏重 / グーチョキツートップ / バランス
+        /// </summary>
+        public static string ToJaLabel(this PlayerArchetypeInfo info)
+            {
+                return info.Archetype switch
+                   {
+                       PlayerArchetype.Heavy
+                           => $"{info.MainColor.ToJa()}偏重",
+
+                       PlayerArchetype.TwinTop
+                           => $"{info.MainColor.ToJa()}{info.SecondColor.ToJa()}ツートップ",
+
+                       PlayerArchetype.Balance
+                           => "バランス",
+
+                       _ => "不明"
+                   };
+            }
+
+
     }
 }

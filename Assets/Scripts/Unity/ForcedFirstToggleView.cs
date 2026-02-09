@@ -1,6 +1,7 @@
 using UnityEngine;
 using UnityEngine.UI;
 using RpsBuild.Core;
+using TMPro;
 
 public sealed class ForcedFirstToggleView : MonoBehaviour
 {
@@ -15,6 +16,12 @@ public sealed class ForcedFirstToggleView : MonoBehaviour
     [SerializeField] private Image framePa;
     [SerializeField] private Sprite frameOnSprite;
     [SerializeField] private Sprite frameOffSprite;
+
+    [Header("Forced Count Texts (optional)")]
+    [SerializeField] private TMP_Text forcedNumberGuText;
+    [SerializeField] private TMP_Text forcedNumberChokiText;
+    [SerializeField] private TMP_Text forcedNumberPaText;
+
 
     public void OnClickGu()    => Toggle(RpsColor.Gu);
     public void OnClickChoki() => Toggle(RpsColor.Choki);
@@ -54,11 +61,19 @@ public sealed class ForcedFirstToggleView : MonoBehaviour
         // Adjust中：ドラフト枠
         if (adjustView != null && adjustView.isActiveAndEnabled)
         {
-            var forced = adjustView.DraftForcedFirstColor;
-            SetFrame(frameGu,    forced == RpsColor.Gu);
-            SetFrame(frameChoki, forced == RpsColor.Choki);
-            SetFrame(framePa,    forced == RpsColor.Pa);
+            int gu = adjustView.GetDraftForcedCount(RpsColor.Gu);
+            int ch = adjustView.GetDraftForcedCount(RpsColor.Choki);
+            int pa = adjustView.GetDraftForcedCount(RpsColor.Pa);
+
+            SetFrame(frameGu,    gu > 0);
+            SetFrame(frameChoki, ch > 0);
+            SetFrame(framePa,    pa > 0);
+
+            SetForcedNumber(forcedNumberGuText,    gu);
+            SetForcedNumber(forcedNumberChokiText, ch);
+            SetForcedNumber(forcedNumberPaText,    pa);
             return;
+
         }
 
         // 従来：Runの枠
@@ -98,5 +113,12 @@ public sealed class ForcedFirstToggleView : MonoBehaviour
         img.sprite = on ? frameOnSprite : frameOffSprite;
         img.color = Color.white;
     }
+
+    private void SetForcedNumber(TMP_Text t, int n)
+    {
+        if (t == null) return;
+        t.text = (n > 0) ? $"{n}枚確定" : "";
+    }
+
 
 }

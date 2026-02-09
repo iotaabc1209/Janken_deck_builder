@@ -9,6 +9,6 @@ public sealed class ResultView : MonoBehaviour
     private void Start()
     {
         resultText.text =
-            $"RESULT\n\nReached Round: {SceneFlow.LastScore}\n\nPress Enter";
+            $"RESULT\n\nScore: {SceneFlow.LastScore}\n\nPress Enter";
     }
 }

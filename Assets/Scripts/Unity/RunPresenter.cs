@@ -42,9 +42,9 @@ public sealed class RunPresenter : MonoBehaviour
 
 
     [SerializeField] private GameHudView hud;
-    [SerializeField] private ResolveHandsView handsView;
     [SerializeField] private TMP_Text outcomeText;
     [SerializeField] private GaugeBarView gaugeBarView;
+    [SerializeField] private ResolveHandsSequenceView handsSequenceView;
     [SerializeField] private ForcedFirstToggleView forcedFirstToggleView;
     [SerializeField] private ResolveOutcomeRowView outcomeRowView;
 
@@ -157,14 +157,33 @@ public sealed class RunPresenter : MonoBehaviour
         forcedFirstToggleView.RefreshVisual();
 
         // 7手×2の表示更新（Resolve画面）
-        if (handsView != null)
+        if (handsSequenceView != null)
         {
-            handsView.Show(rr.EnemyHands, rr.PlayerHands);
-        }
+            // ★追加：ボーナスで勝敗が変わった箇所を強調
+            var hi = new System.Collections.Generic.List<int>(4);
 
-        if (outcomeRowView != null)
+            // Heavy
+            if (_run.LastHeavyBonusApplied)
+                hi.Add(_run.LastHeavyBonusIndex);
+
+            // TwinTop（あなたのRunStateの変数名に合わせてここだけ調整）
+            // 例：単発なら
+            if (_run.LastTwinTopBonusIndices != null && _run.LastTwinTopBonusIndices.Count > 0)
+                hi.AddRange(_run.LastTwinTopBonusIndices);
+
+
+            // 例：複数なら（List<int> 等を持ってるなら）
+            // hi.AddRange(_run.LastTwinTopBonusIndices);
+
+            // Balance（あなたのRunStateの変数名に合わせて）
+            if (_run.LastBalanceBonusApplied)
+                hi.Add(_run.LastBalanceBonusIndex);
+
+            handsSequenceView.Play(rr.EnemyHands, rr.PlayerHands, rr.Outcomes, hi);
+        }
+        else
         {
-            outcomeRowView.Show(rr.Outcomes);
+            Debug.LogWarning("[SeqView] handsSequenceView is null (not assigned in Inspector)");
         }
 
 
@@ -189,11 +208,12 @@ public sealed class RunPresenter : MonoBehaviour
             if (_run.LastRoundWasIntro)
                 {
                     hud.SetRoundLog(
-                        "30枚の山札から7枚同時じゃんけん。\n" +
-                        "試合間にポイントを使用してデッキ調整ができます。\n" +
-                        "出なかった手があると、デッキ内の枚数に応じて右上のゲージがたまります。ポイントでもためられます。\n" +
-                        "ゲージが最大ならOnにすると　次の試合で確定ドロー出来ます。\n" +
-                        "最強のデッキを作りながら連勝を目指せ！"
+                        "30枚の山札から7枚同時じゃんけん！負け数が2以下なら勝利です。\n" +
+                        "勝つためのポイントは「デッキ構築」と「確定ドロー」。\n" +
+                        "コインを使ってデッキを調整したり、確定ドローゲージを溜めよう。\n" +
+                        "ゲージを使うと、次の試合でその手を確定で引けます。\n" +
+                        "また、試合で出なかった手があると、その色のゲージがたまります。\n" +
+                        "最強のデッキを作りながら、3敗する前にどこまで勝てるか挑戦だ！"
                     );
 
                 }
@@ -228,7 +248,12 @@ public sealed class RunPresenter : MonoBehaviour
                         missingLine = first ? "" : ("\n" + sb.ToString());
                     }
 
-                    hud.SetRoundLog(summary + missingLine);
+                    // Assets/Scripts/Unity/RunPresenter.cs
+                    // PlayNextRound() の非Intro側：hud.SetRoundLog(summary + missingLine); を置換
+
+                    string bonusLine = BuildBonusLogJa(rr);
+                    hud.SetRoundLog(summary + missingLine + bonusLine);
+
                     hud.Render(this);
                 }
 
@@ -241,11 +266,6 @@ public sealed class RunPresenter : MonoBehaviour
         if (rr.MissingColors.Count > 0)
             Debug.Log($"  MissingColors: {string.Join(",", rr.MissingColors)}");
 
-
-        if (_run.IsGameOver)
-        {
-            SceneFlow.GoToResult(_run.Score);
-        }
 
     }
 
@@ -383,6 +403,62 @@ public sealed class RunPresenter : MonoBehaviour
             _ => "パー"
         };
     }
+
+    public bool TrySkipResolveSequence()
+        {
+            if (handsSequenceView == null) return false;
+            return handsSequenceView.RequestSkip();
+        }
+
+        private string BuildBonusLogJa(RoundResult rr)
+        {
+            if (_run == null) return "";
+            if (rr == null) return "";
+
+            var sb = new System.Text.StringBuilder();
+
+            // 偏重
+            if (_run.LastHeavyBonusApplied)
+            {
+                sb.Append('\n');
+                sb.Append($"偏重ボーナス：一度だけ{ToJpColor(_run.LastHeavyBonusPlayerColor)}での負けが勝ちになりました");
+            }
+
+            // ツートップ
+            if (_run.LastTwinTopBonusWinCount > 0)
+            {
+                sb.Append('\n');
+                sb.Append($"２トップボーナス：３連で交互に出せた時の負けが{_run.LastTwinTopBonusWinCount}回勝ちになりました");
+            }
+
+            // バランス
+            if (_run.LastBalanceBonusApplied)
+            {
+                sb.Append('\n');
+
+                int handNo = _run.LastBalanceBonusIndex + 1; // 1..7表示
+                string from = ToJpColor(_run.LastBalanceBonusFrom);
+                string to = ToJpColor(_run.LastBalanceBonusTo);
+
+                string outcomeJa = _run.LastBalanceBonusResult switch
+                {
+                    RpsOutcome.Win => "勝ち",
+                    RpsOutcome.Tie => "引き分け",
+                    _ => "負け" // 念のため
+                };
+
+                sb.Append($"バランス：{handNo}手目の{from}が{to}に変わり、{outcomeJa}になりました");
+
+                // 欠損勝利→ゲージ増加は「クリア成功＆欠損あり」でRunState側が加算する仕様なので、それに合わせて表示
+                if (_run.LastBalanceBonusCreatedMissing && rr.IsClear && rr.MissingColors != null && rr.MissingColors.Count > 0)
+                {
+                    sb.Append("（これにより欠損勝利が起き、ゲージが溜まりました）");
+                }
+            }
+
+            return sb.ToString();
+        }
+
 
 
 

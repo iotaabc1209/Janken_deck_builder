@@ -1,6 +1,8 @@
 using UnityEngine;
 using UnityEngine.UI;
 using TMPro;
+using RpsBuild.Core;
+
 
 public sealed class RoundFlowUI : MonoBehaviour
 {
@@ -45,40 +47,49 @@ public sealed class RoundFlowUI : MonoBehaviour
     }
 
     private void OnProceed()
-    {
-        if (presenter == null) return;
-
-        if (_phase == Phase.Resolve)
         {
-            // Resolve → Adjust
-            SetPhase(Phase.Adjust);
+            if (presenter == null) return;
 
-            if (adjustView != null)
-                adjustView.Open(presenter);
-
-            RefreshAdjustRoundLog();
-            presenter.RefreshHud();
-            RefreshProceedInteractable();
-            return;
-        }
-
-        // Adjust → 次ラウンド
-        if (adjustView != null)
-        {
-            if (!adjustView.TryCommitDraft())
+            if (presenter != null && presenter.Run != null && presenter.Run.IsGameOver)
             {
+                SceneFlow.GoToResult(presenter.Run.Score);
+                return;
+            }
+
+
+            if (_phase == Phase.Resolve)
+            {
+                // ★追加：結果表示アニメ中のタップは「遷移」ではなく「スキップ」
+                if (presenter.TrySkipResolveSequence())
+                    return;
+
+                // Resolve → Adjust
+                SetPhase(Phase.Adjust);
+
+                if (adjustView != null)
+                    adjustView.Open(presenter);
+
+                RefreshAdjustRoundLog();
+                presenter.RefreshHud();
                 RefreshProceedInteractable();
                 return;
             }
+
+            if (adjustView != null)
+            {
+                if (!adjustView.TryCommitDraft())
+                {
+                    RefreshProceedInteractable();
+                    return;
+                }
+            }
+
+            SetPhase(Phase.Resolve);
+            presenter.RefreshHud();
+            presenter.PlayNextRound();
+            presenter.RefreshHud();
+            RefreshProceedInteractable();
         }
-
-        presenter.RefreshHud();
-        presenter.PlayNextRound();
-        presenter.RefreshHud();
-
-        SetPhase(Phase.Resolve);
-        RefreshProceedInteractable();
-    }
 
     private void SetPhase(Phase p)
     {
@@ -145,16 +156,40 @@ public sealed class RoundFlowUI : MonoBehaviour
 
     private string BuildAdjustRoundLog()
     {
-        // DraftForcedFirstColor があればそれを優先
-        if (adjustView != null && adjustView.DraftForcedFirstColor.HasValue)
-            return $"確定ドロー：{ToJpColor(adjustView.DraftForcedFirstColor.Value)} 予約";
+        if (adjustView == null) return "確定ドロー：予約なし";
 
-        // 予備：Run側に既に予約が残っているケース
-        if (presenter != null && presenter.Run != null && presenter.Run.ReservedForcedFirst.HasValue)
-            return $"確定ドロー：{ToJpColor(presenter.Run.ReservedForcedFirst.Value)} 予約";
+        int gu = adjustView.GetDraftForcedCount(RpsColor.Gu);
+        int ch = adjustView.GetDraftForcedCount(RpsColor.Choki);
+        int pa = adjustView.GetDraftForcedCount(RpsColor.Pa);
 
-        return "確定ドロー：予約なし";
+        if (gu + ch + pa <= 0) return "確定ドロー：予約なし";
+
+        // 1) まとめ表示：グー×2 / チョキ×1
+        var sb = new System.Text.StringBuilder("確定ドロー：");
+        bool first = true;
+
+        void Add(RpsColor c, int n)
+        {
+            if (n <= 0) return;
+            if (!first) sb.Append(" / ");
+            first = false;
+            sb.Append($"{ToJpColor(c)}×{n}");
+        }
+
+        Add(RpsColor.Gu, gu);
+        Add(RpsColor.Choki, ch);
+        Add(RpsColor.Pa, pa);
+
+        // 2) 順番表示：グー→グー→チョキ
+        //    ※ AdjustPanelView に GetDraftForcedOrderLabelJa() を追加して使う（推奨）
+        string order = adjustView.GetDraftForcedOrderLabelJa();
+        if (!string.IsNullOrEmpty(order))
+            sb.Append($"\n順番：{order}");
+
+        return sb.ToString();
     }
+
+
 
     private static string ToJpColor(RpsBuild.Core.RpsColor c)
     {

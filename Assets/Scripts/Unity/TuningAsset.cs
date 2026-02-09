@@ -12,7 +12,7 @@ public sealed class TuningAsset : ScriptableObject
     [Header("Gauge")]
     public float gaugeMax = 1f;
     public float gainScale = 1f;      // LinearGaugeGainFormula の係数
-    public float gainDenominator = 30f;
+    public float gainDenominator = 10f;
 
     [Header("Environment Archetype Weights")]
     public float heavy = 0.60f;
@@ -30,7 +30,7 @@ public sealed class TuningAsset : ScriptableObject
     public int pointsPerClear = 1;
 
     [Header("Gauge Buy (per 1 point)")]
-    public float gaugeBuyAmount = 0.1f;
+    public float gaugeBuyAmount = 0.5f;
 
 
     public Tuning ToTuning()
